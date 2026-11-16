@@ -11,7 +11,7 @@ from . import config, db, planner
 
 _signer = URLSafeSerializer(config.SECRET_KEY, salt="plan-action")
 
-MODE_LABEL = {"exam": "Exam mode · 5–10 min", "normal": "Normal day", "free": "Free day", "off": "Rest day"}
+MODE_LABEL = {"exam": "Exam period", "normal": "Normal day", "free": "Free day", "off": "Rest day"}
 DIFF_COLOR = {"Easy": "#1a7f37", "Medium": "#b35900", "Hard": "#cf222e"}
 
 
@@ -35,7 +35,9 @@ def _button(url: str, label: str, bg: str) -> str:
 def render(plan: dict, note: str | None = None) -> tuple[str, str, str]:
     d = date.fromisoformat(plan["day"])
     items = plan["items"]
-    subject = f"DSA {d.strftime('%a %d %b')}: {len(items)} problem{'s' if len(items) != 1 else ''} ({MODE_LABEL[plan['mode']]})"
+    subject = (f"DSA {d.strftime('%a %d %b')}: {len(items)} problem{'s' if len(items) != 1 else ''}, "
+               f"~{plan['est_total']} min ({plan['level_name']})")
+    header = f"{plan['level_name']} day · ~{plan['budget']} min budget · {MODE_LABEL[plan['mode']]}"
     p = planner.pace()
 
     rows_html, rows_txt = [], []
@@ -49,11 +51,12 @@ def render(plan: dict, note: str | None = None) -> tuple[str, str, str]:
           </div>
           <div style="font-size:13px;color:#57606a;margin-top:2px">
             <span style="color:{color};font-weight:600">{it['difficulty'] or ''}</span> · {html.escape(it['pattern'])} ·
-            <b>{tag}</b>: {html.escape(it['reason'] or '')}
+            ~{it['est_min']} min · <b>{tag}</b>: {html.escape(it['reason'] or '')}
           </div>
           <div>{_button(action_url(it['id'], 'solved'), '✅ Solved', '#1a7f37')}
                {_button(action_url(it['id'], 'failed'), "😵 Couldn't solve", '#b35900')}
-               {_button(action_url(it['id'], 'skip'), '⏭ No time', '#57606a')}</div>
+               {_button(action_url(it['id'], 'skip'), '⏭ No time', '#57606a')}
+               {_button(action_url(it['id'], 'swap'), '↓ Easier', '#6250d6')}</div>
         </td></tr>""")
         rows_txt.append(f"{i}. [{tag}] {it['title']} ({it['difficulty']}, {it['pattern']}) - {it['url']}\n   {it['reason']}")
 
@@ -63,15 +66,15 @@ def render(plan: dict, note: str | None = None) -> tuple[str, str, str]:
                  + f" · {p['reviews_due']} reviews due")
 
     body_html = f"""<div style="font-family:-apple-system,Segoe UI,Roboto,sans-serif;max-width:560px;margin:auto;color:#1f2328">
-      <div style="font-size:13px;color:#57606a">{MODE_LABEL[plan['mode']]}</div>
+      <div style="font-size:13px;color:#57606a">{header}</div>
       <h2 style="margin:4px 0 8px">Today's DSA</h2>
       {f'<p style="background:#f6f8fa;padding:10px 12px;border-radius:6px;font-size:14px">{html.escape(notes)}</p>' if notes else ''}
       <table style="width:100%;border-collapse:collapse">{''.join(rows_html)}</table>
       <p style="font-size:13px;color:#57606a;margin-top:16px">{pace_line}</p>
-      <p style="font-size:12px;color:#8c959f">Problems you solve on LeetCode are picked up automatically. The buttons are for
-      "couldn't solve" and "no time", so tomorrow's plan can adjust. <a href="{config.BASE_URL}/">Open dashboard</a></p>
+      <p style="font-size:12px;color:#8c959f">Problems you solve on LeetCode are picked up automatically. Use the buttons for
+      "couldn't solve", "no time" or "too hard today" so the plan can adjust. <a href="{config.BASE_URL}/">Open dashboard</a></p>
     </div>"""
-    body_txt = f"{MODE_LABEL[plan['mode']]}\n{notes}\n\n" + "\n\n".join(rows_txt) + f"\n\n{pace_line}\n{config.BASE_URL}/"
+    body_txt = f"{header}\n{notes}\n\n" + "\n\n".join(rows_txt) + f"\n\n{pace_line}\n{config.BASE_URL}/"
     return subject, body_txt, body_html
 
 

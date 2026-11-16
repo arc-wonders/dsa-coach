@@ -1,10 +1,20 @@
 {% extends "base.html" %}
+{% block title %}History · DSA Coach{% endblock %}
 {% block body %}
-<div class="card"><h2>Attempts</h2>
+<div class="page-head">
+  <div><div class="eyebrow">Log</div><h1>History</h1></div>
+  <form method="post" action="/manual" class="row">
+    <input name="slug" placeholder="LeetCode link or slug" required style="min-width:220px">
+    <select name="outcome"><option value="solved">Solved</option><option value="failed">Couldn't</option></select>
+    <button class="btn">Add</button>
+  </form>
+</div>
+<div class="card"><div class="card-b table-wrap">
 <table><tr><th>Date</th><th>Problem</th><th>Pattern</th><th>Result</th><th>Source</th></tr>
-{% for r in rows %}<tr><td>{{ r.day }}</td>
-<td><a href="https://leetcode.com/problems/{{ r.slug }}/" target="_blank">{{ r.title }}</a> <span class="small {{ r.difficulty }}">{{ r.difficulty }}</span>{% if not r.in_list %} <span class="chip">off-list</span>{% endif %}</td>
-<td>{{ r.pattern }}</td><td class="st-{{ r.outcome }}">{{ r.outcome }}</td><td class="muted">{{ r.source }}</td></tr>
-{% else %}<tr><td colspan="5" class="muted">Nothing yet. Run an import or sync.</td></tr>{% endfor %}
-</table></div>
+{% for r in rows %}<tr>
+<td class="tnum muted">{{ r.date.strftime('%d %b') }}</td>
+<td><a href="https://leetcode.com/problems/{{ r.slug }}/" target="_blank" rel="noopener" style="font-weight:500">{{ r.title }}</a> <span class="small d-{{ r.difficulty }}">● {{ r.difficulty }}</span>{% if not r.in_list %} <span class="pill" style="height:18px;font-size:11px">off-list</span>{% endif %}</td>
+<td class="muted">{{ r.pattern }}</td><td class="state s-{{ r.outcome }}">{{ 'Solved' if r.outcome=='solved' else "Couldn't solve" }}</td><td class="muted">{{ r.source }}</td></tr>
+{% else %}<tr><td colspan="5" class="muted">Nothing yet.</td></tr>{% endfor %}
+</table></div></div>
 {% endblock %}

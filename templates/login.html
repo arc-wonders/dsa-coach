@@ -1,6 +1,13 @@
 {% extends "base.html" %}
-{% block body %}
-<div class="card" style="max-width:360px;margin:60px auto"><h2>Log in</h2>
-<form method="post" action="/login" style="display:flex;gap:8px"><input type="password" name="password" style="flex:1" autofocus><button class="primary">Go</button></form>
+{% block bare %}
+<div style="min-height:100vh;display:grid;place-items:center;padding:16px">
+  <div class="card" style="width:100%;max-width:360px;padding:28px">
+    <div class="brand" style="padding:0 0 18px"><i>{ }</i><span>DSA Coach</span></div>
+    <form method="post" action="/login" class="stack" style="gap:12px">
+      <label class="f">Password<input type="password" name="password" autofocus></label>
+      {% if bad %}<div class="small" style="color:var(--bad)">Wrong password.</div>{% endif %}
+      <button class="btn primary" style="height:36px;justify-content:center">Log in</button>
+    </form>
+  </div>
 </div>
 {% endblock %}

@@ -37,13 +37,34 @@ def get_pattern_analysis() -> list:
 def get_today_plan() -> dict:
     """Today's plan: mode and the list of problems with their status."""
     p = planner.get_plan()
-    p["items"] = [{k: i[k] for k in ("id", "title", "difficulty", "pattern", "kind", "status", "reason")} for i in p["items"]]
+    p["items"] = [{k: i[k] for k in ("id", "title", "difficulty", "pattern", "kind", "status", "reason", "est_min")}
+                  for i in p["items"]]
     return p
 
 
 def get_upcoming_schedule(days: int = 21) -> list:
-    """Mode (exam/normal/free/off) and problem counts for each of the next `days` days."""
-    return planner.upcoming_modes(min(max(days, 1), 120))
+    """Per day for the next `days` days: mode (exam/normal/free/off), effort level 0-4
+    (Off, Light ~15 min, Steady ~35, Focused ~60, Deep ~120), and whether the student set it manually."""
+    keep = ("day", "weekday", "mode", "level", "level_name", "minutes", "override", "note")
+    return [{k: d[k] for k in keep} for d in planner.schedule(min(max(days, 1), 120))]
+
+
+def set_day_levels(start_date: str, end_date: str, level: int) -> str:
+    """Set the effort level (0 Off, 1 Light, 2 Steady, 3 Focused, 4 Deep) for every day in an inclusive
+    date range (YYYY-MM-DD). Use for 'busy with internship work on Thursday' or 'free all weekend'."""
+    s, e = date.fromisoformat(start_date), date.fromisoformat(end_date)
+    d = s
+    while d <= e:
+        planner.set_day_level(d, level)
+        d = date.fromordinal(d.toordinal() + 1)
+    return f"level {planner.LEVEL_NAMES[max(0, min(4, int(level)))]} set for {s} to {e}"
+
+
+def reset_day_levels(start_date: str, end_date: str) -> str:
+    """Remove manual effort levels in a date range so the days follow their mode defaults again."""
+    with db.tx() as c:
+        n = c.execute("DELETE FROM day_load WHERE day>=? AND day<=?", (start_date, end_date)).rowcount
+    return f"reset {n} days"
 
 
 def set_mode_for_dates(start_date: str, end_date: str, mode: str, note: str = "") -> str:
@@ -77,12 +98,20 @@ def set_default_modes(weekday_mode: str, weekend_mode: str) -> str:
     return "ok"
 
 
-def set_daily_counts(mode: str, new_problems: int, review_problems: int) -> str:
-    """How many new and review problems a day of the given mode gets."""
+def set_mode_level(mode: str, level: int) -> str:
+    """Default effort level (0-4) for a mode, e.g. make 'normal' weekdays Light because of internships."""
     if mode not in planner.MODES:
         return f"mode must be one of {planner.MODES}"
-    db.set_setting(f"counts_{mode}", [max(0, int(new_problems)), max(0, int(review_problems))])
+    levels = db.get_setting("mode_levels")
+    levels[mode] = max(0, min(4, int(level)))
+    db.set_setting("mode_levels", levels)
     return "ok"
+
+
+def swap_for_easier(item_id: int) -> str:
+    """Replace a problem in today's plan with an easier/quicker one."""
+    pick = planner.swap_item(int(item_id))
+    return f"swapped for {pick['slug']}" if pick else "nothing easier available"
 
 
 def set_goal(goal_total: int, goal_end_date: str) -> str:
@@ -105,7 +134,8 @@ def mark_problem(item_id: int, outcome: str) -> str:
 
 
 TOOLS = [get_status, get_pattern_analysis, get_today_plan, get_upcoming_schedule, set_mode_for_dates,
-         clear_dates, set_default_modes, set_daily_counts, set_goal, regenerate_today_plan, mark_problem]
+         clear_dates, set_default_modes, set_day_levels, reset_day_levels, set_mode_level, set_goal,
+         regenerate_today_plan, mark_problem, swap_for_easier]
 
 
 def _system() -> str:
@@ -115,8 +145,11 @@ timezone {config.TZ.key}.
 A deterministic planner picks the actual problems from a curated pattern list using spaced repetition.
 Your job: understand the student's schedule (exams, busy days, free days), change settings with the tools,
 and explain progress and weak patterns. Never invent problems or stats: call tools to read them.
-Modes: exam = 1 quick easy review (5-10 min); normal = default; free = more problems; off = nothing.
-After changing modes or counts that affect today, call regenerate_today_plan.
+Modes: exam, normal, free, off. Each day also has an effort level: 0 Off, 1 Light (~15 min, easy only),
+2 Steady (~35 min, no Hard), 3 Focused (~60 min), 4 Deep (~120 min). Modes give default levels; the student
+can override single days. The day before an exam block is automatically Light.
+The student also does two internships, so respect stated busy days.
+After changing anything that affects today, call regenerate_today_plan.
 Resolve relative dates ("next week", "from the 3rd") to YYYY-MM-DD yourself. Be brief and concrete."""
 
 

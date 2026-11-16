@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}Sheet · DSA Coach{% endblock %}
+{% block body %}
+<div class="page-head">
+  <div><div class="eyebrow">Problem list</div><h1>Sheet</h1><div class="sub" style="margin-top:4px">Pattern-wise list, cross-referenced with Striver's SDE Sheet.</div></div>
+  <div class="chips">
+    <a class="chip {{ 'on' if f=='all' }}" href="/sheet">All <span class="tnum">{{ counts.all }}</span></a>
+    <a class="chip {{ 'on' if f=='striver' }}" href="/sheet?f=striver">Striver <span class="tnum">{{ counts.striver }}</span></a>
+    <a class="chip {{ 'on' if f=='todo' }}" href="/sheet?f=todo">Unsolved <span class="tnum">{{ counts.todo }}</span></a>
+  </div>
+</div>
+<div class="stack">
+{% for g in groups %}
+  <div class="card">
+    <div class="card-h">
+      <h2>{{ g.name }}</h2>
+      <div class="row" style="min-width:160px;justify-content:flex-end"><span class="muted small tnum">{{ g.done }}/{{ g.total }}</span>
+        <div class="budget" style="width:90px;margin:0"><i style="width:{{ (100*g.done/g.total)|round }}%"></i></div></div>
+    </div>
+    <div class="card-b table-wrap" style="padding-top:6px">
+      <table>
+      {% for r in g['items'] %}
+        <tr>
+          <td style="width:30px"><span class="st {{ r.state }}" title="{{ r.state }}">{{ '✓' if r.state=='solved' else ('↻' if r.state=='due' else ('!' if r.state=='failed' else '')) }}</span></td>
+          <td><a href="https://leetcode.com/problems/{{ r.slug }}/" target="_blank" rel="noopener" style="font-weight:500">{{ r.title or r.slug }}</a>
+            {% if r.striver %} <span class="badge-s">Striver</span>{% endif %}</td>
+          <td style="width:90px" class="d-{{ r.difficulty }} small">● {{ r.difficulty }}</td>
+          <td style="width:150px" class="muted small">{% if r.state=='due' %}review due{% elif r.ago is not none %}solved {{ r.ago }}d ago{% elif r.state=='failed' %}retry pending{% endif %}</td>
+        </tr>
+      {% endfor %}
+      </table>
+    </div>
+  </div>
+{% endfor %}
+</div>
+{% endblock %}

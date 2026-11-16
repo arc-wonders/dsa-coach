@@ -33,9 +33,67 @@ def mode_for(day: date, conn=None) -> tuple[str, str | None]:
     return db.get_setting("default_mode", conn), None
 
 
-def counts_for(mode: str, conn=None) -> tuple[int, int]:
-    n, r = db.get_setting(f"counts_{mode}", conn) or (0, 0)
-    return int(n), int(r)
+LEVEL_NAMES = ["Off", "Light", "Steady", "Focused", "Deep"]
+MAX_ITEMS = [0, 1, 2, 3, 5]
+# Expected new problems per day at each level (used for pacing forecasts).
+NEW_PER_LEVEL = [0, 0.2, 0.8, 1.4, 2.9]
+# Estimated minutes per problem.
+COST = {
+    "new": {"Easy": 15, "Medium": 30, "Hard": 60, None: 30},
+    "review": {"Easy": 8, "Medium": 18, "Hard": 35, None: 18},
+}
+
+
+def allowed(kind: str, difficulty: str | None, level: int) -> bool:
+    """Hard problems only when you have real time; light days are easy-only."""
+    if level <= 1:
+        return difficulty == "Easy"
+    if difficulty == "Hard":
+        return level >= 4 or (kind == "review" and level >= 3)
+    return True
+
+
+def _overrides(conn) -> dict[str, int]:
+    if "overrides" not in conn.cache:
+        conn.cache["overrides"] = {r["day"]: int(r["level"]) for r in conn.execute("SELECT day, level FROM day_load")}
+    return conn.cache["overrides"]
+
+
+def day_info(day: date, conn) -> dict:
+    """Effort level for a day: your manual override, else the mode's default,
+    tapered to Light the day before an exam block."""
+    mode, note = mode_for(day, conn)
+    mode_levels = db.get_setting("mode_levels", conn)
+    auto = int(mode_levels.get(mode, 2))
+    reason = note if note and note != "weekend" else None
+    if mode not in ("exam", "off"):
+        nxt, _ = mode_for(day + timedelta(days=1), conn)
+        if nxt == "exam" and auto > 1:
+            auto, reason = 1, "exams start tomorrow"
+    ov = _overrides(conn).get(day.isoformat())
+    level = auto if ov is None else ov
+    minutes = db.get_setting("level_minutes", conn)[level]
+    return {"day": day.isoformat(), "weekday": day.strftime("%a"), "mode": mode, "note": reason,
+            "auto_level": auto, "level": level, "override": ov is not None,
+            "level_name": LEVEL_NAMES[level], "minutes": minutes}
+
+
+def schedule(days: int = 28, start: date | None = None, conn=None) -> list[dict]:
+    if conn is None:
+        with db.tx() as c:
+            return schedule(days, start, c)
+    start = start or db.today()
+    return [day_info(start + timedelta(days=i), conn) for i in range(days)]
+
+
+def set_day_level(day: date, level: int | None) -> None:
+    with db.tx() as c:
+        if level is None:
+            c.execute("DELETE FROM day_load WHERE day=?", (day.isoformat(),))
+        else:
+            level = max(0, min(4, int(level)))
+            c.execute("INSERT INTO day_load(day, level) VALUES (?, ?) ON CONFLICT(day) DO UPDATE SET level=excluded.level",
+                      (day.isoformat(), level))
 
 
 # ---------------- analysis ----------------
@@ -107,14 +165,14 @@ def recent_performance(day: date, conn) -> dict:
     """How well you followed the last 7 days of plans."""
     start = (day - timedelta(days=7)).isoformat()
     rows = conn.execute(
-        "SELECT day, status FROM plan_items WHERE day>=? AND day<?", (start, day.isoformat())
+        "SELECT day, status FROM plan_items WHERE day>=? AND day<? AND status!='swapped'", (start, day.isoformat())
     ).fetchall()
     total = len(rows)
     engaged = sum(r["status"] in ("solved", "failed") for r in rows)
     solved = sum(r["status"] == "solved" for r in rows)
     # Consecutive days (going back from yesterday) with a plan but nothing done.
     by_day: dict[str, list[str]] = {}
-    for r in conn.execute("SELECT day, status FROM plan_items WHERE day<? ORDER BY day DESC LIMIT 60",
+    for r in conn.execute("SELECT day, status FROM plan_items WHERE day<? AND status!='swapped' ORDER BY day DESC LIMIT 60",
                           (day.isoformat(),)):
         by_day.setdefault(r["day"], []).append(r["status"])
     missed_streak = 0
@@ -127,42 +185,37 @@ def recent_performance(day: date, conn) -> dict:
 
 
 def pace(conn=None) -> dict:
-    own = conn is None
-    conn = conn or db.connect()
-    try:
-        today = db.today()
-        goal_total = int(db.get_setting("goal_total", conn) or 0)
-        goal_end = date.fromisoformat(db.get_setting("goal_end", conn))
-        done = conn.execute(
-            "SELECT COUNT(*) FROM problems p JOIN srs s ON s.slug=p.slug WHERE p.in_list=1 AND s.solves>0"
-        ).fetchone()[0]
-        total_solved = conn.execute("SELECT COUNT(*) FROM srs WHERE solves>0").fetchone()[0]
-        remaining = max(0, goal_total - done)
-        days_left = max(0, (goal_end - today).days)
-        capacity = 0
-        mode_days = {m: 0 for m in MODES}
-        for i in range(days_left + 1):
-            d = today + timedelta(days=i)
-            m, _ = mode_for(d, conn)
-            mode_days[m] += 1
-            capacity += counts_for(m, conn)[0]
-        due = conn.execute("SELECT COUNT(*) FROM srs WHERE solves>0 AND due<=?", (db.now_ts(),)).fetchone()[0]
-        return {
-            "goal_total": goal_total, "goal_end": goal_end.isoformat(), "list_done": done,
-            "total_solved": total_solved, "remaining": remaining, "days_left": days_left,
-            "planned_capacity": capacity, "on_track": capacity >= remaining,
-            "shortfall": max(0, remaining - capacity), "mode_days": mode_days, "reviews_due": due,
-        }
-    finally:
-        if own:
-            conn.close()
+    if conn is None:
+        with db.tx() as c:
+            return pace(c)
+    today = db.today()
+    goal_total = int(db.get_setting("goal_total", conn) or 0)
+    goal_end = date.fromisoformat(db.get_setting("goal_end", conn))
+    done = conn.execute(
+        "SELECT COUNT(*) FROM problems p JOIN srs s ON s.slug=p.slug WHERE p.in_list=1 AND s.solves>0"
+    ).fetchone()[0]
+    list_total = conn.execute("SELECT COUNT(*) FROM problems WHERE in_list=1").fetchone()[0]
+    total_solved = conn.execute("SELECT COUNT(*) FROM srs WHERE solves>0").fetchone()[0]
+    remaining = max(0, goal_total - done)
+    days_left = max(0, (goal_end - today).days)
+    capacity = 0.0
+    level_days = [0] * 5
+    for info in schedule(days_left + 1, today, conn):
+        level_days[info["level"]] += 1
+        capacity += NEW_PER_LEVEL[info["level"]]
+    capacity = int(round(capacity))
+    due = conn.execute("SELECT COUNT(*) FROM srs WHERE solves>0 AND due<=?", (db.now_ts(),)).fetchone()[0]
+    return {
+        "goal_total": goal_total, "goal_end": goal_end.isoformat(), "list_done": done, "list_total": list_total,
+        "total_solved": total_solved, "remaining": remaining, "days_left": days_left,
+        "planned_capacity": capacity, "on_track": capacity >= remaining,
+        "shortfall": max(0, remaining - capacity), "level_days": level_days, "reviews_due": due,
+    }
 
 
 # ---------------- plan generation ----------------
 
-def _pick_reviews(conn, day: date, n: int, exam: bool, exclude: set[str], weakness: dict[str, float]) -> list[tuple[str, str]]:
-    if n <= 0:
-        return []
+def _review_candidates(conn, day: date, exclude: set[str], weakness: dict[str, float]) -> list[dict]:
     end_of_day = int(datetime.combine(day, time(23, 59), config.TZ).timestamp())
     now = db.now_ts()
     rows = conn.execute(
@@ -170,51 +223,41 @@ def _pick_reviews(conn, day: date, n: int, exam: bool, exclude: set[str], weakne
            WHERE (s.solves>0 OR s.fails>0) AND s.due<=?""",
         (end_of_day,),
     ).fetchall()
-    cands = []
+    out = []
     for r in rows:
         if r["slug"] in exclude:
             continue
+        if not r["in_list"] and r["difficulty"] == "Easy" and not r["fails"]:
+            continue  # random easy problems outside the list aren't worth revising
         interval = max(1, r["interval_days"]) * 86400
         overdue = max(0, now - r["due"]) / interval
         prio = min(overdue, 3) + 0.6 * min(r["fails"], 3) + weakness.get(r["pattern"], 0.5)
-        recent = r["last_attempt"] and now - r["last_attempt"] < 21 * 86400
-        if not exam and not r["in_list"] and r["difficulty"] == "Easy" and not r["fails"]:
-            continue  # random easy problems outside the list aren't worth revising
         prio += 1.0 if r["in_list"] else 0
-        if exam:
-            # Quick wins only: easy problems or ones you saw recently.
-            if not (r["difficulty"] == "Easy" or recent):
-                continue
-            prio += 1 if r["difficulty"] == "Easy" else 0
-        cands.append((prio, r))
-    cands.sort(key=lambda x: -x[0])
-    out = []
-    for _, r in cands[:n]:
         if r["solves"] == 0:
-            why = "you couldn't solve this last time; try again"
+            why = "you couldn't solve this last time, try again"
         else:
             days = (now - r["last_solved"]) // 86400
             why = f"revise: last solved {days} day{'s' if days != 1 else ''} ago"
-        out.append((r["slug"], why))
-    if exam and len(out) < n:
-        # Nothing due that's quick: re-do the most recent easy solve.
-        rows = conn.execute(
-            """SELECT s.slug FROM srs s JOIN problems p ON p.slug=s.slug
-               WHERE s.solves>0 AND p.difficulty='Easy' ORDER BY s.last_solved DESC LIMIT 10"""
-        ).fetchall()
-        for r in rows:
-            if len(out) >= n:
-                break
-            if r["slug"] not in exclude and r["slug"] not in {s for s, _ in out}:
-                out.append((r["slug"], "quick warm-up you've solved before"))
+        out.append({"slug": r["slug"], "kind": "review", "difficulty": r["difficulty"], "reason": why,
+                    "prio": prio, "cost": COST["review"][r["difficulty"]]})
+    out.sort(key=lambda x: -x["prio"])
     return out
 
 
-def _pick_new(conn, day: date, n: int, analysis: list[dict], exclude: set[str], easy_only: bool) -> list[tuple[str, str]]:
-    if n <= 0:
-        return []
-    out: list[tuple[str, str]] = []
-    # 1) carry over unsolved new problems from the last few days
+def _warmups(conn, exclude: set[str]) -> list[dict]:
+    """Recently solved easy problems, for light days with nothing due."""
+    rows = conn.execute(
+        """SELECT s.slug, p.difficulty FROM srs s JOIN problems p ON p.slug=s.slug
+           WHERE s.solves>0 AND p.difficulty='Easy' ORDER BY s.last_solved DESC LIMIT 15"""
+    ).fetchall()
+    return [{"slug": r["slug"], "kind": "review", "difficulty": "Easy", "reason": "quick warm-up you've solved before",
+             "prio": 0, "cost": COST["review"]["Easy"]} for r in rows if r["slug"] not in exclude]
+
+
+def _new_candidates(conn, day: date, analysis: list[dict], exclude: set[str]) -> list[dict]:
+    out: list[dict] = []
+    used = set(exclude)
+    # 1) unsolved new problems carried over from the last few days
     rows = conn.execute(
         """SELECT pi.slug, p.difficulty, MIN(pi.day) first_day FROM plan_items pi JOIN problems p ON p.slug=pi.slug
            LEFT JOIN srs s ON s.slug=pi.slug
@@ -224,39 +267,64 @@ def _pick_new(conn, day: date, n: int, analysis: list[dict], exclude: set[str], 
         ((day - timedelta(days=5)).isoformat(), day.isoformat()),
     ).fetchall()
     for r in rows:
-        if len(out) >= n:
-            break
-        if r["slug"] in exclude or (easy_only and r["difficulty"] != "Easy"):
-            continue
-        out.append((r["slug"], "carried over from a missed day"))
+        if r["slug"] not in used:
+            used.add(r["slug"])
+            out.append({"slug": r["slug"], "kind": "new", "difficulty": r["difficulty"],
+                        "reason": "carried over from a missed day", "cost": COST["new"][r["difficulty"]]})
 
-    # 2) next unsolved problems from the active patterns (lowest coverage first)
+    # 2) round-robin over the active patterns (lowest coverage first), list order inside each
     active = [a for a in analysis if a["list_total"] and a["coverage"] < PATTERN_DONE_AT][:ACTIVE_PATTERNS]
     if not active:
         active = sorted([a for a in analysis if a["list_solved"] < a["list_total"]], key=lambda a: a["coverage"])[:ACTIVE_PATTERNS]
     active.sort(key=lambda a: a["coverage"])
     queues = {}
     for a in active:
-        rows = conn.execute(
+        queues[a["pattern"]] = [dict(r) for r in conn.execute(
             """SELECT p.slug, p.difficulty FROM problems p LEFT JOIN srs s ON s.slug=p.slug
                WHERE p.in_list=1 AND p.pattern=? AND COALESCE(s.solves,0)=0 AND COALESCE(s.fails,0)=0
                ORDER BY p.list_order""",
             (a["pattern"],),
-        ).fetchall()
-        q = [r for r in rows if not easy_only or r["difficulty"] == "Easy"] or (rows[:1] if easy_only else rows)
-        queues[a["pattern"]] = [r["slug"] for r in q]
-
-    used = exclude | {s for s, _ in out}
-    while len(out) < n and any(queues.values()):
+        )]
+    while any(queues.values()):
         for a in active:
             q = queues[a["pattern"]]
-            while q and q[0] in used:
+            while q and q[0]["slug"] in used:
                 q.pop(0)
-            if q and len(out) < n:
-                slug = q.pop(0)
-                used.add(slug)
-                out.append((slug, f"new · {a['pattern']} ({a['list_solved']}/{a['list_total']} done)"))
+            if q:
+                r = q.pop(0)
+                used.add(r["slug"])
+                out.append({"slug": r["slug"], "kind": "new", "difficulty": r["difficulty"],
+                            "reason": f"new · {a['pattern']} ({a['list_solved']}/{a['list_total']} done)",
+                            "cost": COST["new"][r["difficulty"]]})
     return out
+
+
+def _fill(level: int, budget: int, reviews: list[dict], new: list[dict], review_share: float) -> list[dict]:
+    """Pick items that fit the time budget and the difficulty rules for this level."""
+    reviews = [r for r in reviews if allowed("review", r["difficulty"], level)]
+    new = [n for n in new if allowed("new", n["difficulty"], level)]
+    picked: list[dict] = []
+    spent = 0
+
+    def take(pool, limit, max_items):
+        nonlocal spent
+        for cand in list(pool):
+            if len(picked) >= max_items:
+                return
+            if spent + cand["cost"] <= limit:
+                picked.append(cand)
+                pool.remove(cand)
+                spent += cand["cost"]
+
+    cap = MAX_ITEMS[level]
+    take(reviews, budget * review_share, cap if review_share >= 1 else max(1, round(cap * review_share)))
+    take(new, budget, cap)
+    take(reviews, budget, cap)
+    if not picked and level > 0:
+        pool = sorted(reviews + new, key=lambda x: x["cost"])
+        if pool:
+            picked.append(pool[0])
+    return picked
 
 
 def generate_plan(day: date | None = None, force: bool = False) -> dict:
@@ -271,76 +339,73 @@ def generate_plan(day: date | None = None, force: bool = False) -> dict:
         if force:
             c.execute("DELETE FROM plan_items WHERE day=? AND status='pending'", (day.isoformat(),))
 
-        mode, mode_note = mode_for(day, c)
-        new_n, rev_n = counts_for(mode, c)
+        info = day_info(day, c)
+        level = info["level"]
         perf = recent_performance(day, c)
         analysis = pattern_analysis(c)
-        notes = []
-        if mode_note and mode_note != "weekend":
-            notes.append(mode_note)
-        easy_only = mode == "exam"
+        notes = [info["note"].capitalize() + "."] if info["note"] else []
 
-        if mode in ("normal", "free"):
+        if level >= 2 and not info["override"]:
             if perf["missed_streak"] >= 3:
-                new_n, rev_n, easy_only = 1, 1, True
+                level = 1
                 notes.append(f"You've missed {perf['missed_streak']} days, so today is a light restart.")
             elif perf["completion"] is not None and perf["total"] >= 4 and perf["completion"] < 0.4:
-                new_n = max(1, new_n - 1)
-                notes.append("Lighter load: you finished under 40% of last week's plan.")
-            elif perf["completion"] is not None and perf["total"] >= 6 and perf["completion"] >= 0.9:
-                if not pace(c)["on_track"]:
-                    new_n += 1
-                    notes.append("You're consistent but behind on the goal, so one extra new problem.")
-            due_count = c.execute(
-                """SELECT COUNT(*) FROM srs s JOIN problems p ON p.slug=s.slug WHERE s.solves>0 AND s.due<=?
-                   AND (p.in_list=1 OR s.fails>0 OR p.difficulty!='Easy')""", (db.now_ts(),)).fetchone()[0]
-            if due_count > 15 and new_n > 1:
-                new_n -= 1
-                rev_n += 1
-                notes.append(f"{due_count} reviews are overdue, so one new problem was swapped for a review.")
+                level -= 1
+                notes.append("Lighter than usual: you finished under 40% of last week's plan.")
+            elif perf["completion"] is not None and perf["total"] >= 6 and perf["completion"] >= 0.9 \
+                    and level < 4 and not pace(c)["on_track"]:
+                level += 1
+                notes.append("You've been consistent but are behind the goal, so a bit more today.")
+        budget = db.get_setting("level_minutes", c)[level]
 
         already = {r["slug"] for r in c.execute("SELECT slug FROM plan_items WHERE day=?", (day.isoformat(),))}
         weakness = {a["pattern"]: 1 - a["score"] for a in analysis}
-        reviews = _pick_reviews(c, day, rev_n, easy_only, already, weakness)
-        new = _pick_new(c, day, new_n, analysis, already | {s for s, _ in reviews}, easy_only)
-        if mode == "exam" and not reviews:
-            new = _pick_new(c, day, 1, analysis, already, True)
+        reviews = _review_candidates(c, day, already, weakness)
+        overdue = len(reviews)
+        if level == 1:
+            reviews += _warmups(c, already | {r["slug"] for r in reviews})
+        new = _new_candidates(c, day, analysis, already | {r["slug"] for r in reviews})
+        share = 1.0 if level == 1 else (0.6 if overdue > 15 else 0.4)
+        items = _fill(level, budget, reviews, new, share)
 
         c.execute(
-            "INSERT INTO plans(day, mode, note) VALUES (?,?,?) ON CONFLICT(day) DO UPDATE SET mode=excluded.mode, note=excluded.note",
-            (day.isoformat(), mode, " ".join(notes) or None),
+            """INSERT INTO plans(day, mode, note, level) VALUES (?,?,?,?)
+               ON CONFLICT(day) DO UPDATE SET mode=excluded.mode, note=excluded.note, level=excluded.level""",
+            (day.isoformat(), info["mode"], " ".join(notes) or None, level),
         )
-        for kind, items in (("new", new), ("review", reviews)):
-            for slug, why in items:
-                c.execute(
-                    "INSERT OR IGNORE INTO plan_items(day, slug, kind, reason, updated_at) VALUES (?,?,?,?,?)",
-                    (day.isoformat(), slug, kind, why, db.now_ts()),
-                )
+        for it in items:
+            c.execute(
+                "INSERT OR IGNORE INTO plan_items(day, slug, kind, reason, est_min, updated_at) VALUES (?,?,?,?,?,?)",
+                (day.isoformat(), it["slug"], it["kind"], it["reason"], it["cost"], db.now_ts()),
+            )
         return get_plan(day, c)
 
 
 def get_plan(day: date | None = None, conn=None) -> dict:
+    if conn is None:
+        with db.tx() as c:
+            return get_plan(day, c)
     day = day or db.today()
-    own = conn is None
-    conn = conn or db.connect()
-    try:
-        plan = conn.execute("SELECT * FROM plans WHERE day=?", (day.isoformat(),)).fetchone()
-        items = conn.execute(
-            """SELECT pi.*, p.title, p.difficulty, p.pattern FROM plan_items pi
-               JOIN problems p ON p.slug=pi.slug WHERE pi.day=? ORDER BY pi.kind, pi.id""",
-            (day.isoformat(),),
-        ).fetchall()
-        return {
-            "day": day.isoformat(),
-            "exists": plan is not None,
-            "mode": plan["mode"] if plan else mode_for(day, conn)[0],
-            "note": plan["note"] if plan else None,
-            "emailed_at": plan["emailed_at"] if plan else None,
-            "items": [dict(i) | {"url": f"https://leetcode.com/problems/{i['slug']}/"} for i in items],
-        }
-    finally:
-        if own:
-            conn.close()
+    plan = conn.execute("SELECT * FROM plans WHERE day=?", (day.isoformat(),)).fetchone()
+    items = conn.execute(
+        """SELECT pi.*, p.title, p.difficulty, p.pattern, p.striver FROM plan_items pi
+           JOIN problems p ON p.slug=pi.slug WHERE pi.day=? AND pi.status!='swapped' ORDER BY pi.kind, pi.id""",
+        (day.isoformat(),),
+    ).fetchall()
+    info = day_info(day, conn)
+    level = plan["level"] if plan and plan["level"] is not None else info["level"]
+    items = [dict(i) | {"url": f"https://leetcode.com/problems/{i['slug']}/",
+                        "est_min": i["est_min"] or COST[i["kind"]][i["difficulty"]]} for i in items]
+    return {
+        "day": day.isoformat(), "exists": plan is not None,
+        "mode": plan["mode"] if plan else info["mode"],
+        "level": level, "level_name": LEVEL_NAMES[level],
+        "budget": db.get_setting("level_minutes", conn)[level],
+        "est_total": sum(i["est_min"] for i in items if i["status"] in ("pending", "solved", "failed")),
+        "note": plan["note"] if plan else None,
+        "emailed_at": plan["emailed_at"] if plan else None,
+        "items": items,
+    }
 
 
 def mark_item(item_id: int, action: str) -> dict:
@@ -360,19 +425,64 @@ def mark_item(item_id: int, action: str) -> dict:
             c.execute("UPDATE plan_items SET status='failed', updated_at=? WHERE id=?", (now, item_id))
         elif action == "skip":
             c.execute("UPDATE plan_items SET status='skipped', updated_at=? WHERE id=?", (now, item_id))
+        elif action == "undo":
+            c.execute("UPDATE plan_items SET status='pending', updated_at=? WHERE id=?", (now, item_id))
         else:
-            raise ValueError("action must be solved, failed or skip")
+            raise ValueError("action must be solved, failed, skip or undo")
         return dict(c.execute(
             "SELECT pi.*, p.title FROM plan_items pi JOIN problems p ON p.slug=pi.slug WHERE pi.id=?", (item_id,)
         ).fetchone())
 
 
-def upcoming_modes(days: int = 21) -> list[dict]:
+def swap_item(item_id: int) -> dict | None:
+    """Replace a problem with an easier / quicker one (e.g. 'too hard for today')."""
     with db.tx() as c:
-        out = []
-        for i in range(days):
-            d = db.today() + timedelta(days=i)
-            m, note = mode_for(d, c)
-            n, r = counts_for(m, c)
-            out.append({"day": d.isoformat(), "weekday": d.strftime("%a"), "mode": m, "note": note, "new": n, "review": r})
-        return out
+        item = c.execute(
+            "SELECT pi.*, p.difficulty FROM plan_items pi JOIN problems p ON p.slug=pi.slug WHERE pi.id=?", (item_id,)
+        ).fetchone()
+        if not item or item["status"] != "pending":
+            return None
+        day = date.fromisoformat(item["day"])
+        today_slugs = {r["slug"] for r in c.execute("SELECT slug FROM plan_items WHERE day=?", (item["day"],))}
+        analysis = pattern_analysis(c)
+        weakness = {a["pattern"]: 1 - a["score"] for a in analysis}
+        rank = DIFF_RANK.get(item["difficulty"], 1)
+        cost = COST[item["kind"]][item["difficulty"]]
+        reviews = _review_candidates(c, day, today_slugs, weakness) + _warmups(c, today_slugs)
+        new = _new_candidates(c, day, analysis, today_slugs)
+        same, other = (reviews, new) if item["kind"] == "review" else (new, reviews)
+
+        def easier(x):
+            return DIFF_RANK.get(x["difficulty"], 1) < rank or (rank == 0 and x["cost"] <= cost)
+
+        pick = next((x for x in same + other if easier(x)), None)
+        if not pick:
+            return None
+        c.execute("UPDATE plan_items SET status='swapped', updated_at=? WHERE id=?", (db.now_ts(), item_id))
+        c.execute(
+            "INSERT OR IGNORE INTO plan_items(day, slug, kind, reason, est_min, updated_at) VALUES (?,?,?,?,?,?)",
+            (item["day"], pick["slug"], pick["kind"], "easier swap · " + pick["reason"], pick["cost"], db.now_ts()),
+        )
+        return pick
+
+
+def add_item(day: date | None = None) -> dict | None:
+    """'I have more time': add one more problem (new first), skipping Hard."""
+    day = day or db.today()
+    with db.tx() as c:
+        today_slugs = {r["slug"] for r in c.execute("SELECT slug FROM plan_items WHERE day=?", (day.isoformat(),))}
+        analysis = pattern_analysis(c)
+        weakness = {a["pattern"]: 1 - a["score"] for a in analysis}
+        pool = _new_candidates(c, day, analysis, today_slugs) + _review_candidates(c, day, today_slugs, weakness)
+        pick = next((x for x in pool if x["difficulty"] != "Hard"), None)
+        if not pick:
+            return None
+        c.execute(
+            "INSERT OR IGNORE INTO plan_items(day, slug, kind, reason, est_min, updated_at) VALUES (?,?,?,?,?,?)",
+            (day.isoformat(), pick["slug"], pick["kind"], "extra · " + pick["reason"], pick["cost"], db.now_ts()),
+        )
+        return pick
+
+
+def upcoming_modes(days: int = 21) -> list[dict]:
+    return schedule(days)

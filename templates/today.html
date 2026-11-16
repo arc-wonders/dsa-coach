@@ -1,0 +1,134 @@
+{% extends "base.html" %}
+{% block title %}Today · DSA Coach{% endblock %}
+{% block body %}
+<div class="page-head">
+  <div>
+    <div class="eyebrow">{{ today.strftime('%A, %d %B') }}</div>
+    <h1>Today's plan</h1>
+  </div>
+  <div class="row">
+    <span class="muted small">How much time today?</span>
+    <div class="seg" id="todayLevel">
+      {% for l in LEVELS %}<button data-l="{{ loop.index0 }}" class="{{ 'on' if loop.index0==plan.level }}">{{ l }}</button>{% endfor %}
+    </div>
+  </div>
+</div>
+
+<div class="grid g-main">
+  <div class="stack">
+    <div class="card">
+      <div class="card-h">
+        <div>
+          <h2>{{ plan.level_name }} day · {{ plan['items']|length }} problem{{ '' if plan['items']|length==1 else 's' }}</h2>
+          <div class="muted small">≈ {{ plan.est_total }} of {{ plan.budget }} min · <span class="dot m-{{ plan.mode }}"></span> {{ plan.mode|capitalize }} mode</div>
+        </div>
+        <div class="row">
+          <form class="inline" method="post" action="/sync"><button class="btn ghost sm" title="Pull your latest LeetCode solves">Sync</button></form>
+          <form class="inline" method="post" action="/send"><button class="btn sm">Email me</button></form>
+        </div>
+      </div>
+      <div class="card-b" style="padding-bottom:6px">
+        <div class="budget"><i style="width:{{ [100, (plan.est_total / (plan.budget or 1) * 100)|round]|min if plan.budget else 0 }}%"></i></div>
+        {% if plan.note %}<div class="note" style="margin-top:12px">{{ plan.note }}</div>{% endif %}
+      </div>
+      <div class="items">
+        {% for it in plan['items'] %}
+        <div class="item {{ 'done' if it.status!='pending' }}">
+          <div class="num">{{ loop.index }}</div>
+          <div>
+            <div class="row" style="justify-content:space-between">
+              <div class="title"><a href="{{ it.url }}" target="_blank" rel="noopener">{{ it.title }}</a></div>
+              {% if it.status!='pending' %}<span class="state s-{{ it.status }}">{{ {'solved':'Solved','failed':"Couldn't solve",'skipped':'No time','missed':'Missed'}[it.status] }}</span>{% endif %}
+            </div>
+            <div class="meta">
+              <span class="d-{{ it.difficulty }}">● {{ it.difficulty }}</span>
+              <span>{{ it.pattern }}</span>
+              <span>~{{ it.est_min }} min</span>
+              <span class="pill" style="height:20px">{{ 'Review' if it.kind=='review' else 'New' }}</span>
+              {% if it.striver %}<span class="badge-s" title="Also in Striver's SDE Sheet">Striver</span>{% endif %}
+            </div>
+            <div class="why">{{ it.reason }}</div>
+            <div class="acts">
+              {% if it.status=='pending' %}
+              <form class="inline" method="post" action="/item/{{ it.id }}/solved"><button class="btn sm">✓ Solved</button></form>
+              <form class="inline" method="post" action="/item/{{ it.id }}/failed"><button class="btn sm">Couldn't solve</button></form>
+              <form class="inline" method="post" action="/item/{{ it.id }}/skip"><button class="btn sm ghost">No time</button></form>
+              <form class="inline" method="post" action="/item/{{ it.id }}/swap"><button class="btn sm ghost" title="Replace with an easier or quicker problem">↓ Too hard today</button></form>
+              {% else %}
+              <form class="inline" method="post" action="/item/{{ it.id }}/undo"><button class="btn sm ghost">Undo</button></form>
+              {% endif %}
+            </div>
+          </div>
+        </div>
+        {% else %}
+        <div class="item"><div></div><div class="muted">Nothing planned today. Rest up, or pick a level above if you find time.</div></div>
+        {% endfor %}
+      </div>
+      <div class="card-b row" style="border-top:1px solid var(--border)">
+        <form class="inline" method="post" action="/add"><button class="btn sm">+ I have time for one more</button></form>
+        <span class="spacer"></span>
+        <form class="inline" method="post" action="/regen"><button class="btn sm ghost">Rebuild plan</button></form>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-h">
+        <div><h2>Next 4 weeks</h2><div class="muted small">Drag points up or down to set how much time you have. Double-click to reset a day.</div></div>
+        <a class="btn sm ghost" href="/schedule">Open planner →</a>
+      </div>
+      <div class="card-b">
+        <div class="chart" style="height:220px"><canvas id="load"></canvas></div>
+        <div class="legend" style="margin-top:10px">
+          <span><i class="m-normal"></i>Normal</span><span><i class="m-exam"></i>Exam</span><span><i class="m-free"></i>Free</span><span><i class="m-off"></i>Off</span>
+          <span><i style="background:transparent;border:2px solid var(--text);border-radius:50%"></i>Set by you</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="stack">
+    <div class="grid" style="grid-template-columns:1fr 1fr;gap:12px">
+      <div class="card tile"><div class="k">List progress</div><div class="v tnum">{{ pace.list_done }}<span class="muted" style="font-size:15px">/{{ pace.list_total }}</span></div><div class="h">goal {{ pace.goal_total }} by {{ pace.goal_end[5:] }}</div></div>
+      <div class="card tile"><div class="k">Streak</div><div class="v tnum">{{ streak }} <span class="muted" style="font-size:15px">day{{ '' if streak==1 else 's' }}</span></div><div class="h">{{ 'keep it going' if streak else 'solve one to start' }}</div></div>
+      <div class="card tile"><div class="k">Reviews due</div><div class="v tnum">{{ pace.reviews_due }}</div><div class="h">spaced repetition</div></div>
+      <div class="card tile"><div class="k">Pace</div><div class="v" style="font-size:18px;color:{{ 'var(--good)' if pace.on_track else 'var(--warn)' }}">{{ 'On track' if pace.on_track else pace.shortfall ~ ' short' }}</div><div class="h">{{ pace.days_left }} days left</div></div>
+    </div>
+    <div class="card">
+      <div class="card-h"><h2>This week</h2></div>
+      <div class="card-b">
+        <div class="week">
+          {% for d in week %}
+          <div class="d {{ 'today' if loop.first }}" title="{{ d.level_name }} · ~{{ d.minutes }} min{{ ' · ' ~ d.note if d.note else '' }}">
+            <div class="w">{{ d.weekday }}</div><div class="n">{{ d.day[8:]|int }}</div>
+            <div class="bars">{% for i in range(4) %}<i style="height:{{ 5 + i*4 }}px;{{ 'background:var(--mode-' ~ d.mode ~ ')' if i < d.level }}"></i>{% endfor %}</div>
+            <div class="l">{{ d.level_name }}</div>
+          </div>
+          {% endfor %}
+        </div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-h"><h2>Solved somewhere else?</h2></div>
+      <div class="card-b">
+        <form method="post" action="/manual" class="row">
+          <input name="slug" placeholder="LeetCode link or slug" required style="flex:1;min-width:150px">
+          <select name="outcome"><option value="solved">Solved</option><option value="failed">Couldn't</option></select>
+          <button class="btn">Add</button>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+(async () => {
+  const days = await (await fetch('/api/schedule?days=28')).json();
+  loadEditor(document.getElementById('load'), days, { onSaved: (res, todayChanged) => { if (todayChanged) location.reload(); } });
+})();
+document.querySelectorAll('#todayLevel button').forEach(b => b.onclick = async () => {
+  await fetch('/api/load', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ days: [{ day: '{{ plan.day }}', level: +b.dataset.l }] }) });
+  location.reload();
+});
+</script>
+{% endblock %}

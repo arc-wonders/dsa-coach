@@ -6,7 +6,7 @@ from collections import defaultdict
 from datetime import timedelta
 
 from . import db, leetcode
-from .patterns import PATTERNS, pattern_for_tags
+from .patterns import PATTERNS, STRIVER, pattern_for_tags
 
 log = logging.getLogger(__name__)
 
@@ -17,24 +17,27 @@ FAIL_INTERVAL = 2
 
 
 def seed_problems(fetch_meta: bool = True) -> list[str]:
-    """Insert the curated list. Returns slugs LeetCode didn't recognise."""
+    """Insert/refresh the curated list. Only fetches metadata for problems we don't know yet.
+    Returns slugs LeetCode didn't recognise."""
     slugs = [s for _, items in PATTERNS for s in items]
-    meta = leetcode.question_meta(slugs) if fetch_meta else {}
-    missing = [s for s in slugs if fetch_meta and s not in meta]
+    with db.tx() as c:
+        known = {r["slug"] for r in c.execute("SELECT slug FROM problems WHERE difficulty IS NOT NULL")}
+    meta = leetcode.question_meta([s for s in slugs if s not in known]) if fetch_meta else {}
+    missing = [s for s in slugs if fetch_meta and s not in meta and s not in known]
     with db.tx() as c:
         for pattern, items in PATTERNS:
             for i, slug in enumerate(items):
                 m = meta.get(slug, {})
                 c.execute(
-                    """INSERT INTO problems(slug, title, difficulty, pattern, in_list, list_order, tags)
-                       VALUES (?, ?, ?, ?, 1, ?, ?)
-                       ON CONFLICT(slug) DO UPDATE SET pattern=excluded.pattern, in_list=1,
+                    """INSERT INTO problems(slug, title, difficulty, pattern, in_list, list_order, tags, striver)
+                       VALUES (?, ?, ?, ?, 1, ?, ?, ?)
+                       ON CONFLICT(slug) DO UPDATE SET pattern=excluded.pattern, in_list=1, striver=excluded.striver,
                          list_order=excluded.list_order,
                          title=COALESCE(excluded.title, problems.title),
                          difficulty=COALESCE(excluded.difficulty, problems.difficulty),
                          tags=CASE WHEN excluded.tags='[]' THEN problems.tags ELSE excluded.tags END""",
-                    (slug, m.get("title") or slug.replace("-", " ").title(), m.get("difficulty"),
-                     pattern, i, json.dumps(m.get("tags", []))),
+                    (slug, m.get("title") or (None if slug in known else slug.replace("-", " ").title()),
+                     m.get("difficulty"), pattern, i, json.dumps(m.get("tags", [])), int(slug in STRIVER)),
                 )
     return missing
 

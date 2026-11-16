@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% block title %}Insights · DSA Coach{% endblock %}
+{% block body %}
+{% set p = d.pace %}
+<div class="page-head">
+  <div><div class="eyebrow">Trends</div><h1>Insights</h1></div>
+</div>
+
+<div class="grid g-tiles" style="margin-bottom:16px">
+  <div class="card tile"><div class="k">List progress</div><div class="v tnum">{{ (100 * p.list_done / (p.list_total or 1))|round|int }}%</div><div class="h">{{ p.list_done }} of {{ p.list_total }} · {{ d.striver.done }}/{{ d.striver.total }} Striver</div></div>
+  <div class="card tile"><div class="k">Total solved</div><div class="v tnum">{{ p.total_solved }}</div><div class="h"><span class="d-Easy">{{ d.difficulty.Easy }} E</span> · <span class="d-Medium">{{ d.difficulty.Medium }} M</span> · <span class="d-Hard">{{ d.difficulty.Hard }} H</span></div></div>
+  <div class="card tile"><div class="k">Consistency</div><div class="v tnum">{{ d.active_30 }}<span class="muted" style="font-size:15px">/30 days</span></div><div class="h">{{ d.streak }}-day streak{% if d.completion_4w is not none %} · {{ d.completion_4w }}% of plan done{% endif %}</div></div>
+  <div class="card tile"><div class="k">Goal forecast</div><div class="v" style="font-size:20px;color:{{ 'var(--good)' if p.on_track else 'var(--warn)' }}">{{ 'On track' if p.on_track else p.shortfall ~ ' short' }}</div><div class="h">{{ p.goal_total }} by {{ p.goal_end }} · {{ p.planned_capacity }} slots ahead</div></div>
+</div>
+
+<div class="card" style="margin-bottom:16px">
+  <div class="card-h">
+    <div><h2>Progress toward your goal</h2><div class="muted small">Forecast follows the effort levels in your schedule.</div></div>
+    <div class="legend"><span><i class="line" style="background:var(--mode-normal)"></i>Solved</span><span><i class="dash" style="border-color:var(--mode-normal)"></i>Forecast</span><span><i class="dash" style="border-color:var(--text-3)"></i>Target pace</span></div>
+  </div>
+  <div class="card-b"><div class="chart" style="height:260px"><canvas id="progress"></canvas></div></div>
+</div>
+
+<div class="grid g-2" style="margin-bottom:16px">
+  <div class="card">
+    <div class="card-h"><div><h2>Weekly activity</h2><div class="muted small">Last 12 weeks</div></div>
+      <div class="legend"><span><i class="m-normal"></i>New</span><span><i class="m-exam"></i>Review</span></div></div>
+    <div class="card-b"><div class="chart" style="height:220px"><canvas id="weekly"></canvas></div></div>
+  </div>
+  <div class="card">
+    <div class="card-h"><div><h2>Daily activity</h2><div class="muted small">Problems solved per day, last 26 weeks</div></div></div>
+    <div class="card-b">
+      <div class="heat">
+        {% for h in d.heat %}<i class="l{{ [h.count, 4]|min if h.count else 0 }}" title="{{ h.day }}: {{ h.count }} solved"></i>{% endfor %}
+      </div>
+      <div class="legend" style="margin-top:12px"><span>Less</span>
+        <i style="background:var(--heat-0)"></i><i style="background:var(--heat-1)"></i><i style="background:var(--heat-2)"></i><i style="background:var(--heat-3)"></i><i style="background:var(--heat-4)"></i><span>More</span></div>
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-h"><div><h2>Patterns</h2><div class="muted small">Coverage of the list. Strength also weighs failed attempts and overdue reviews.</div></div></div>
+  <div class="card-b">
+    {% for a in d.patterns %}
+    <div class="pat">
+      <div>{{ a.pattern }}</div>
+      <div class="bar" title="{{ a.list_solved }}/{{ a.list_total }}{% if a.fail_rate %} · {{ (a.fail_rate*100)|round|int }}% failed{% endif %}{% if a.due_reviews %} · {{ a.due_reviews }} due{% endif %}"><i style="width:{{ (a.coverage*100)|round }}%"></i></div>
+      <div class="muted tnum small" style="text-align:right">{{ a.list_solved }}/{{ a.list_total }}</div>
+      <div class="lbl {{ a.label.split()[0] }}">{{ a.label }}</div>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+
+<script>
+const D = {{ d|tojson }};
+progressChart(document.getElementById('progress'), D.progress, D.pace.goal_total);
+weeklyChart(document.getElementById('weekly'), D.weekly);
+</script>
+{% endblock %}

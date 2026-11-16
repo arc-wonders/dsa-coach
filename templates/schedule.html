@@ -1,36 +1,77 @@
 {% extends "base.html" %}
+{% block title %}Schedule · DSA Coach{% endblock %}
 {% block body %}
-<div class="cols">
-<div>
-<div class="card"><h2>Next 5 weeks</h2>
-  <div class="days">{% for d in upcoming %}
-    <div class="day mode-{{ d.mode }}" title="{{ d.note or '' }}"><b>{{ d.weekday }}</b><br>{{ d.day[5:] }}<br>{{ d.mode }}<br><span class="small">{{ d.new }}+{{ d.review }}</span></div>
-  {% endfor %}</div>
-  <p class="small muted">Numbers are new + review problems.</p>
+<div class="page-head">
+  <div><div class="eyebrow">Planner</div><h1>Schedule</h1><div class="sub" style="margin-top:4px">Set how much time you'll have each day. Plans and the goal forecast follow this curve.</div></div>
+  <button class="btn" id="reset">Reset my changes</button>
 </div>
-<div class="card"><h2>Date ranges</h2>
-  <table><tr><th>From</th><th>To</th><th>Mode</th><th>Note</th><th></th></tr>
-  {% for r in ranges %}<tr><td>{{ r.start_day }}</td><td>{{ r.end_day }}</td><td><span class="chip mode-{{ r.mode }}">{{ r.mode }}</span></td><td>{{ r.note or '' }}</td>
-    <td><form class="inline" method="post" action="/schedule/{{ r.id }}/delete"><button>Remove</button></form></td></tr>
-  {% else %}<tr><td colspan="5" class="muted">None yet</td></tr>{% endfor %}</table>
-  <form method="post" action="/schedule" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:12px">
-    <input type="date" name="start_day" required><input type="date" name="end_day" required>
-    <select name="mode">{% for m in modes %}<option value="{{ m }}">{{ m }}</option>{% endfor %}</select>
-    <input name="note" placeholder="e.g. mid-sems"><button class="primary">Add</button></form>
+
+<div class="card" style="margin-bottom:16px">
+  <div class="card-h">
+    <div><h2>Effort for the next 8 weeks</h2><div class="muted small">Drag a point up or down, or drag across several days at once. Double-click to put a day back on automatic.</div></div>
+    <div class="legend"><span><i class="m-normal"></i>Normal</span><span><i class="m-exam"></i>Exam</span><span><i class="m-free"></i>Free</span><span><i class="m-off"></i>Off</span></div>
+  </div>
+  <div class="card-b">
+    <div class="chart" style="height:300px"><canvas id="load"></canvas></div>
+    <div class="grid" style="grid-template-columns:repeat(5,1fr);gap:8px;margin-top:14px" id="levels">
+      {% for l in LEVELS %}
+      <div style="padding:8px 10px;border:1px solid var(--border);border-radius:10px">
+        <div style="font-weight:600;font-size:13px">{{ l }}</div>
+        <div class="muted small">{% if loop.index0 == 0 %}no problems{% else %}~{{ settings.level_minutes[loop.index0] }} min · {{ ['','easy only','no Hard','Hard reviews ok','anything'][loop.index0] }}{% endif %}</div>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
 </div>
+
+<div class="grid g-2">
+  <div class="card">
+    <div class="card-h"><div><h2>Exams and busy periods</h2><div class="muted small">The day before an exam block automatically becomes Light.</div></div></div>
+    <div class="card-b">
+      <div class="table-wrap"><table>
+        <tr><th>Dates</th><th>Mode</th><th>Note</th><th></th></tr>
+        {% for r in ranges %}
+        <tr><td class="tnum">{{ r.start_day[5:] }} → {{ r.end_day[5:] }}</td><td><span class="row" style="gap:6px"><span class="dot m-{{ r.mode }}"></span>{{ r.mode|capitalize }}</span></td><td class="muted">{{ r.note or '' }}</td>
+          <td style="text-align:right"><form class="inline" method="post" action="/schedule/{{ r.id }}/delete"><button class="btn sm ghost">Remove</button></form></td></tr>
+        {% else %}<tr><td colspan="4" class="muted">No date ranges yet.</td></tr>{% endfor %}
+      </table></div>
+      <form method="post" action="/schedule" class="form-grid" style="margin-top:14px;align-items:end">
+        <label class="f">From<input type="date" name="start_day" required min="{{ today }}"></label>
+        <label class="f">To<input type="date" name="end_day" required min="{{ today }}"></label>
+        <label class="f">Mode<select name="mode">{% for m in ['exam','off','free','normal'] %}<option value="{{ m }}">{{ m|capitalize }}</option>{% endfor %}</select></label>
+        <label class="f">Note<input name="note" placeholder="e.g. end-sems"></label>
+        <button class="btn primary" style="height:34px">Add</button>
+      </form>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-h"><h2>Defaults</h2></div>
+    <form class="card-b" method="post" action="/settings">
+      <div class="form-grid">
+        <label class="f">Weekdays<select name="default_mode">{% for m in modes %}<option value="{{ m }}" {{ 'selected' if m==settings.default_mode }}>{{ m|capitalize }}</option>{% endfor %}</select></label>
+        <label class="f">Weekends<select name="weekend_mode">{% for m in modes %}<option value="{{ m }}" {{ 'selected' if m==settings.weekend_mode }}>{{ m|capitalize }}</option>{% endfor %}</select></label>
+        <label class="f">Goal (list problems)<input type="number" name="goal_total" value="{{ settings.goal_total }}" min="1"></label>
+        <label class="f">Goal date<input type="date" name="goal_end" value="{{ settings.goal_end }}"></label>
+      </div>
+      <div class="muted small" style="margin:16px 0 8px;font-weight:500">Default effort per mode</div>
+      <div class="form-grid">
+        {% for m in modes %}<label class="f">{{ m|capitalize }}<select name="level_{{ m }}">{% for l in LEVELS %}<option value="{{ loop.index0 }}" {{ 'selected' if loop.index0==settings.mode_levels[m] }}>{{ l }}</option>{% endfor %}</select></label>{% endfor %}
+      </div>
+      <div class="muted small" style="margin:16px 0 8px;font-weight:500">Minutes per level</div>
+      <div class="form-grid">
+        {% for i in range(1,5) %}<label class="f">{{ LEVELS[i] }}<input type="number" name="min_{{ i }}" value="{{ settings.level_minutes[i] }}" min="5" max="300"></label>{% endfor %}
+      </div>
+      <div class="row" style="margin-top:16px"><button class="btn primary">Save</button><span class="muted small">Forecast with current settings: {{ 'on track' if pace.on_track else pace.shortfall ~ ' problems short of the goal' }}.</span></div>
+    </form>
+  </div>
 </div>
-<div class="card"><h2>Settings</h2>
-<form method="post" action="/settings">
-  <p>Weekday mode <select name="default_mode">{% for m in modes %}<option {{ 'selected' if m==settings.default_mode }}>{{ m }}</option>{% endfor %}</select></p>
-  <p>Weekend mode <select name="weekend_mode">{% for m in modes %}<option {{ 'selected' if m==settings.weekend_mode }}>{{ m }}</option>{% endfor %}</select></p>
-  <p>Goal <input type="number" name="goal_total" value="{{ settings.goal_total }}" style="width:80px"> list problems by
-     <input type="date" name="goal_end" value="{{ settings.goal_end }}"></p>
-  <table><tr><th>Mode</th><th>New</th><th>Review</th></tr>
-  {% for m in ['exam','normal','free'] %}{% set c = settings['counts_'+m] %}
-  <tr><td>{{ m }}</td><td><input type="number" min="0" max="10" name="{{ m }}_new" value="{{ c[0] }}" style="width:60px"></td>
-      <td><input type="number" min="0" max="10" name="{{ m }}_review" value="{{ c[1] }}" style="width:60px"></td></tr>{% endfor %}
-  </table>
-  <p><button class="primary">Save</button></p>
-</form></div>
-</div>
+
+<script>
+(async () => {
+  const days = await (await fetch('/api/schedule?days=56')).json();
+  loadEditor(document.getElementById('load'), days, { horizon: 56 });
+})();
+document.getElementById('reset').onclick = async () => { await fetch('/api/load/reset', { method: 'POST' }); location.reload(); };
+</script>
 {% endblock %}

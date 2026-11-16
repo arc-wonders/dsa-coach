@@ -14,11 +14,15 @@ cp .env.example .env        # fill in Gmail + Gemini (see below)
 Other commands: `sync`, `plan [--force]`, `preview` (writes email_preview.html), `send`, `daily`.
 
 ## How planning works (`coach/planner.py`)
-- **Modes per day**: exam (1 quick easy/recent review), normal (2 new + 1 review), free (3 + 2), off. Weekends default to free. Set ranges in the UI or via the assistant.
-- **New problems**: from the 3 earliest patterns under 60% coverage, round-robin, easiest first.
+- **Effort levels per day**: Off, Light (~15 min, easy only), Steady (~35 min, no Hard), Focused (~60 min, Hard reviews ok),
+  Deep (~120 min). Modes (exam/normal/free/off) give the default level; drag points on the Schedule chart to override a day.
+  The day before an exam block is automatically Light.
+- **Time budget**: each problem has an estimate (new Easy 15 / Medium 30 / Hard 60 min, reviews about half) and the plan fits the day's budget.
+- **New problems**: from the 3 earliest patterns under 60% coverage, round-robin, easiest first. List cross-referenced with Striver's SDE Sheet.
 - **Reviews**: spaced repetition 3 → 7 → 15 → 30 → 60 days; "couldn't solve" resets to 2 days.
-- **Adapting**: missed items carry over; <40% done last week → lighter; 3+ missed days → light restart; overdue pile → swap a new for a review; consistent but behind goal → one extra.
-- **Weakness**: per pattern from coverage, fail rate and overdue reviews (code, not LLM). Gemini only reads these numbers.
+- **Adapting**: missed items carry over; <40% done last week → one level lighter; 3+ missed days → Light restart;
+  "Too hard today" swaps a problem for an easier one; "one more" adds a problem.
+- **Insights**: goal forecast from your schedule, weekly activity, daily heatmap, per-pattern strength.
 
 ## Gmail
 Turn on 2-Step Verification, then create an App Password at https://myaccount.google.com/apppasswords.

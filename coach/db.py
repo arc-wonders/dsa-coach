@@ -65,18 +65,26 @@ CREATE TABLE IF NOT EXISTS availability (
     note TEXT
 );
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS day_load (day TEXT PRIMARY KEY, level INTEGER NOT NULL);
 """
-TABLES = ["problems", "attempts", "srs", "plan_items", "plans", "availability", "settings"]
+# Columns added after the first release: (table, column, type)
+MIGRATIONS = [
+    ("problems", "striver", "INTEGER NOT NULL DEFAULT 0"),
+    ("plans", "level", "INTEGER"),
+    ("plan_items", "est_min", "INTEGER"),
+]
+TABLES = ["problems", "attempts", "srs", "plan_items", "plans", "availability", "settings", "day_load"]
 
 DEFAULT_SETTINGS = {
     "goal_end": "",
     "goal_total": "",
     "default_mode": "normal",
     "weekend_mode": "free",
-    "counts_exam": [0, 1],
-    "counts_normal": [2, 1],
-    "counts_free": [3, 2],
-    "counts_off": [0, 0],
+    # default effort level (0 off .. 4 deep) for each mode
+    "mode_levels": {"off": 0, "exam": 1, "normal": 2, "free": 3},
+    # minutes per level
+    "level_minutes": [0, 15, 35, 60, 120],
+    "start_date": "",
     "last_auto_run": "",
     "last_sync": 0,
 }
@@ -153,6 +161,11 @@ def init_schema() -> None:
         for stmt in SCHEMA.format(pk=pk).split(";"):
             if stmt.strip():
                 c.execute(stmt)
+        for table, col, typ in MIGRATIONS:
+            if IS_PG:
+                c.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {col} {typ}")
+            elif col not in [r[1] for r in c.execute(f"PRAGMA table_info({table})")]:
+                c.execute(f"ALTER TABLE {table} ADD COLUMN {col} {typ}")
         for k, v in DEFAULT_SETTINGS.items():
             c.execute("INSERT OR IGNORE INTO settings(key, value) VALUES (?, ?)", (k, json.dumps(v)))
 
