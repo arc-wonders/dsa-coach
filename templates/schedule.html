@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block body %}
+<div class="cols">
+<div>
+<div class="card"><h2>Next 5 weeks</h2>
+  <div class="days">{% for d in upcoming %}
+    <div class="day mode-{{ d.mode }}" title="{{ d.note or '' }}"><b>{{ d.weekday }}</b><br>{{ d.day[5:] }}<br>{{ d.mode }}<br><span class="small">{{ d.new }}+{{ d.review }}</span></div>
+  {% endfor %}</div>
+  <p class="small muted">Numbers are new + review problems.</p>
+</div>
+<div class="card"><h2>Date ranges</h2>
+  <table><tr><th>From</th><th>To</th><th>Mode</th><th>Note</th><th></th></tr>
+  {% for r in ranges %}<tr><td>{{ r.start_day }}</td><td>{{ r.end_day }}</td><td><span class="chip mode-{{ r.mode }}">{{ r.mode }}</span></td><td>{{ r.note or '' }}</td>
+    <td><form class="inline" method="post" action="/schedule/{{ r.id }}/delete"><button>Remove</button></form></td></tr>
+  {% else %}<tr><td colspan="5" class="muted">None yet</td></tr>{% endfor %}</table>
+  <form method="post" action="/schedule" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:12px">
+    <input type="date" name="start_day" required><input type="date" name="end_day" required>
+    <select name="mode">{% for m in modes %}<option value="{{ m }}">{{ m }}</option>{% endfor %}</select>
+    <input name="note" placeholder="e.g. mid-sems"><button class="primary">Add</button></form>
+</div>
+</div>
+<div class="card"><h2>Settings</h2>
+<form method="post" action="/settings">
+  <p>Weekday mode <select name="default_mode">{% for m in modes %}<option {{ 'selected' if m==settings.default_mode }}>{{ m }}</option>{% endfor %}</select></p>
+  <p>Weekend mode <select name="weekend_mode">{% for m in modes %}<option {{ 'selected' if m==settings.weekend_mode }}>{{ m }}</option>{% endfor %}</select></p>
+  <p>Goal <input type="number" name="goal_total" value="{{ settings.goal_total }}" style="width:80px"> list problems by
+     <input type="date" name="goal_end" value="{{ settings.goal_end }}"></p>
+  <table><tr><th>Mode</th><th>New</th><th>Review</th></tr>
+  {% for m in ['exam','normal','free'] %}{% set c = settings['counts_'+m] %}
+  <tr><td>{{ m }}</td><td><input type="number" min="0" max="10" name="{{ m }}_new" value="{{ c[0] }}" style="width:60px"></td>
+      <td><input type="number" min="0" max="10" name="{{ m }}_review" value="{{ c[1] }}" style="width:60px"></td></tr>{% endfor %}
+  </table>
+  <p><button class="primary">Save</button></p>
+</form></div>
+</div>
+{% endblock %}

@@ -1,0 +1,5 @@
+.venv/
+.env
+*.db*
+email_preview.html
+__pycache__/

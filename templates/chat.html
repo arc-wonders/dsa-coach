@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block body %}
+<div class="card" style="display:flex;flex-direction:column;height:calc(100vh - 140px)">
+  <div style="display:flex;justify-content:space-between"><h2>Assistant</h2><button onclick="resetChat()">New chat</button></div>
+  {% if not enabled %}<p class="msg">Set GEMINI_API_KEY in .env to enable the assistant.</p>{% endif %}
+  <div id="log" style="flex:1;overflow:auto;display:flex;flex-direction:column;gap:10px;padding:4px 0">
+    <div class="muted small">Try: "My end-sems run Dec 1 to Dec 14, then I'm free till Jan 5" · "Where am I weak?" · "I'm travelling this weekend, skip it"</div>
+  </div>
+  <form id="f" style="display:flex;gap:8px;margin-top:10px">
+    <input id="m" style="flex:1" placeholder="Tell me about your schedule..." autocomplete="off"><button class="primary">Send</button>
+  </form>
+</div>
+<style>.bubble{padding:8px 12px;border-radius:10px;max-width:80%;white-space:pre-wrap}.me{align-self:flex-end;background:var(--accent);color:#fff}.ai{align-self:flex-start;background:var(--chip)}</style>
+<script>
+let history=[];const log=document.getElementById('log'),f=document.getElementById('f'),m=document.getElementById('m');
+function add(text,cls){const d=document.createElement('div');d.className='bubble '+cls;d.textContent=text;log.appendChild(d);log.scrollTop=log.scrollHeight;return d}
+f.onsubmit=async e=>{e.preventDefault();const t=m.value.trim();if(!t)return;m.value='';add(t,'me');const w=add('…','ai');
+  try{const r=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:t,history})});
+  const reply=(await r.json()).reply;w.textContent=reply;if(r.ok){history.push({role:'user',text:t},{role:'model',text:reply})}}catch(err){w.textContent='Error: '+err}};
+function resetChat(){history=[];log.innerHTML=''}
+</script>
+{% endblock %}
