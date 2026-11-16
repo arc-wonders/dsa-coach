@@ -3,3 +3,5 @@
 *.db*
 __pycache__/
 email_preview.html
+.vercel
+.env*

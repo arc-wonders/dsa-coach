@@ -28,7 +28,8 @@ GEMINI_API_KEY = env("GEMINI_API_KEY")
 GEMINI_MODEL = env("GEMINI_MODEL", "gemini-3.8-flash")
 
 # Public URL of the web app; used for the buttons inside emails.
-BASE_URL = env("BASE_URL", "http://localhost:8000").rstrip("/")
+BASE_URL = (env("BASE_URL") or (f"https://{env('VERCEL_PROJECT_PRODUCTION_URL')}" if env("VERCEL_PROJECT_PRODUCTION_URL")
+            else "http://localhost:8000")).rstrip("/")
 SECRET_KEY = env("SECRET_KEY", "change-me")
 APP_PASSWORD = env("APP_PASSWORD")  # empty = no login (fine for localhost only)
 

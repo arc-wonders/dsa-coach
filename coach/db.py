@@ -114,7 +114,8 @@ class Conn:
                 cols = [d.name for d in cursor.description] if cursor.description else []
                 return lambda vals: Row(cols, vals)
 
-            self.raw = psycopg.connect(config.DATABASE_URL, row_factory=factory, connect_timeout=15)
+            self.raw = psycopg.connect(config.DATABASE_URL, row_factory=factory, connect_timeout=15,
+                                       prepare_threshold=None)  # safe behind Neon's pooler
         else:
             self.raw = sqlite3.connect(config.DB_PATH, timeout=30)
             self.raw.row_factory = sqlite3.Row
